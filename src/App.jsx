@@ -165,34 +165,25 @@ const sigCalc=(sig,effQty)=>{
     const plates=runs*g.colors;
     return{...g,runs,plates};
   });
-  const groupPages=groups.reduce((a,g)=>a+g.pages,0);
-  const isFB=sig.side==="Front&Back";
-  const isBB=sig.side==="Back&Back - Left-Right"||sig.side==="Back&Back - Top-Bottom";
-  // Front&Back: front and back are calculated as separate passes, each with their own page count and colors —
-  // NOT the same total pages run twice (that was the source of the old doubled-plate bug).
-  const frontPages=sig.frontPages||0,backPages=sig.backPages||0;
-  const frontRuns=frontPages>0?Math.ceil(frontPages/pps):0;
-  const backRuns=backPages>0?Math.ceil(backPages/pps):0;
-  const frontPlates=frontRuns*(sig.frontColors||4);
-  const backPlates=backRuns*(sig.backColors||1);
-  const totalPlates=isFB?(frontPlates+backPlates):groups.reduce((a,g)=>a+g.plates,0);
-  // Sheets are based on one full pass through the job's pages — Back&Back/Front&Back do NOT change the sheet count.
-  const totalRuns=isFB?frontRuns:groups.reduce((a,g)=>a+g.runs,0);
+  const totalPlates=groups.reduce((a,g)=>a+g.plates,0);
+  const totalRuns=groups.reduce((a,g)=>a+g.runs,0);
+  const bothSide=sig.side&&sig.side!=="Single Side"; // Back&Back or Front&Back
   const plateCost=totalPlates*(sig.plateRate||0);
-  const sheetsNeeded=totalRuns*effQty; // actual physical sheets/papers — never rounded, never doubled
-  // Impressions: Back&Back doubles the raw sheet count (extra pass per sheet). Front&Back rounds sheets
-  // up to the nearest 1000 (same billing-minimum convention as Single Sheet) then computes front and
-  // back impressions SEPARATELY, each against its own plate count.
-  const chargedSheets=cr(sheetsNeeded);
-  const frontImpressions=isFB?chargedSheets*frontPlates:0;
-  const backImpressions=isFB?chargedSheets*backPlates:0;
-  const impressions=isFB?frontImpressions+backImpressions:sheetsNeeded*totalPlates*(isBB?2:1);
+  // Both-side modes pair runs onto shared sheets (front+back on one physical sheet, or mirrored
+  // back&back for an odd leftover run) — this halves sheets needed either way. Verified against
+  // real worked examples: 1000 books, 216 pages, 8 pages/sheet, 1 color → 27 runs → 13,500 sheets
+  // (=27×1000/2), 27 plates, and Rs.32,400 impression cost — matches exactly for both Front&Back
+  // and pure Back&Back, since both reduce to the same run-pairing math.
+  const sheetsNeeded=bothSide?Math.ceil(totalRuns*effQty/2):totalRuns*effQty;
+  // Impression cost: every plate costs the same charged-quantity rate, regardless of side mode —
+  // cr(effQty)/1000 × plateRate per plate, summed across all plates.
+  const impressions=totalPlates*cr(effQty);
+  const impressionCost=totalPlates*(cr(effQty)/1000)*(sig.plateRate||0);
   const fit=sheetsFromPaper(sig.paperW,sig.paperH,sig.sheetW,sig.sheetH);
   const perPaper=Math.max(fit.ups,1);
   const noOfPapers=Math.ceil(sheetsNeeded/perPaper);
   const paperCost=noOfPapers*(sig.paperRate||0);
-  return{groups,groupPages,frontRuns,backRuns,frontPlates,backPlates,totalPlates,totalRuns,impressions,
-    chargedSheets,frontImpressions,backImpressions,
+  return{groups,totalPlates,totalRuns,impressions,impressionCost,
     plateCost,sheetsNeeded,noOfPapers,paperCost,fit,perPaper};
 };
 
@@ -1074,20 +1065,6 @@ export default function App(){
                   marginBottom:"5px",fontSize:"9px",color:ERR,fontWeight:"700"}}>
                   ⚠ Sheet size exceeds {pl2.name}'s max sheet size ({fs(pl2.maxL)}×{fs(pl2.maxW)}).</div>:null;
               })()}
-              {s.side==="Front&Back"&&<div style={{display:"flex",gap:"4px",marginBottom:"5px"}}>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:"8px",color:C,fontWeight:"700",marginBottom:"2px"}}>Front — Pages</div>
-                  <FreeNum val={s.frontPages||0} onVal={v=>updSig(s.id,{frontPages:v})}
-                    style={{width:"100%",padding:"4px 2px",border:`1.5px solid ${C}`,borderRadius:"5px",
-                    fontSize:"11px",textAlign:"center",fontWeight:"700",outline:"none",boxSizing:"border-box"}}/>
-                </div>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:"8px",color:M,fontWeight:"700",marginBottom:"2px"}}>Back — Pages</div>
-                  <FreeNum val={s.backPages||0} onVal={v=>updSig(s.id,{backPages:v})}
-                    style={{width:"100%",padding:"4px 2px",border:`1.5px solid ${M}`,borderRadius:"5px",
-                    fontSize:"11px",textAlign:"center",fontWeight:"700",outline:"none",boxSizing:"border-box"}}/>
-                </div>
-              </div>}
 
               {/* Color group breakdown — colors per group selected via 1-8 dropdown */}
               {s.groups.map((g,gi)=>(
@@ -1223,10 +1200,7 @@ export default function App(){
             /* Multi-Sheet: Paper/Plate/Printing shown SEPARATELY per signature — each may use a
                different plate/rate, so a single mixed total would misreport the real cost. */
             <div style={{marginBottom:"6px"}}>
-              {msCalcs.map((s,i)=>{
-                const sPrintCost=(s.impressions/1000)*(s.plateRate||0);
-                const isFBSig=s.side==="Front&Back";
-                return(
+              {msCalcs.map((s,i)=>(
                 <div key={s.id} style={{background:BG,borderRadius:"8px",padding:"7px 9px",marginBottom:"6px"}}>
                   <div style={{fontSize:"10px",fontWeight:"800",color:i%2===0?C:M,marginBottom:"4px"}}>{s.name}</div>
                   <div style={{display:"flex",justifyContent:"space-between",marginBottom:"2px"}}>
@@ -1237,26 +1211,12 @@ export default function App(){
                     <span style={{fontSize:"10px",color:MT,fontWeight:"600"}}>Plate ● — {s.totalPlates} plates ({s.plateName||"—"})</span>
                     <span style={{fontSize:"12px",fontWeight:"800",color:T}}>Rs.{fmt(Math.round(s.plateCost))}</span>
                   </div>
-                  {isFBSig?<>
-                    <div style={{display:"flex",justifyContent:"space-between"}}>
-                      <span style={{fontSize:"10px",color:C,fontWeight:"600"}}>Front — {fmt(s.frontImpressions)} imp</span>
-                      <span style={{fontSize:"11px",fontWeight:"700",color:T}}>{fmt(s.frontPlates)} pl</span>
-                    </div>
-                    <div style={{display:"flex",justifyContent:"space-between",marginBottom:"2px"}}>
-                      <span style={{fontSize:"10px",color:M,fontWeight:"600"}}>Back — {fmt(s.backImpressions)} imp</span>
-                      <span style={{fontSize:"11px",fontWeight:"700",color:T}}>{fmt(s.backPlates)} pl</span>
-                    </div>
-                    <div style={{display:"flex",justifyContent:"space-between"}}>
-                      <span style={{fontSize:"10px",color:MT,fontWeight:"600"}}>Printing (Impression) ● — {fmt(s.impressions)} imp total</span>
-                      <span style={{fontSize:"12px",fontWeight:"800",color:T}}>Rs.{fmt(Math.round(sPrintCost))}</span>
-                    </div>
-                  </>:
-                    <div style={{display:"flex",justifyContent:"space-between"}}>
-                      <span style={{fontSize:"10px",color:MT,fontWeight:"600"}}>Printing (Impression) ● — {fmt(s.impressions)} imp</span>
-                      <span style={{fontSize:"12px",fontWeight:"800",color:T}}>Rs.{fmt(Math.round(sPrintCost))}</span>
-                    </div>}
+                  <div style={{display:"flex",justifyContent:"space-between"}}>
+                    <span style={{fontSize:"10px",color:MT,fontWeight:"600"}}>Printing (Impression) ● — {fmt(s.impressions)} imp</span>
+                    <span style={{fontSize:"12px",fontWeight:"800",color:T}}>Rs.{fmt(Math.round(s.impressionCost))}</span>
+                  </div>
                 </div>
-              );})}
+              ))}
             </div>}
 
             {/* Optional fields — pick from one dropdown, shown 2/row (odd one out spans full width) */}
