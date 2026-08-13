@@ -284,7 +284,7 @@ export default function App(){
   const[tax,setTax]=useState(0);
   const[enabledCosts,setEnabledCosts]=useState({});
   const[fieldDialog,setFieldDialog]=useState(null); // {k,l,set,val,hasDD,ddOpts,ddKey,setDdk} while adding/editing a field
-  const toggleCost=k=>setEnabledCosts(p=>({...p,[k]:!p[k]}));
+  const toggleCost=k=>setEnabledCosts(p=>({...p,[`${activeTab}:${k}`]:!p[`${activeTab}:${k}`]}));
 
   // Booklet sheets
   const[sheets,setSheets]=useState([]);
@@ -355,8 +355,8 @@ export default function App(){
   const lamJW=lW+2*cmSz+1,lamJH=lH+2*cmSz+1;
   const lamSq=m2i(lamJW)*m2i(lamJH);
   const lamC=(lamK==="No Laminate"?0:lamSq*lRate*sheetsNeed)*(lamBoth?2:1);
-  const printCost=platC+papC+(enabledCosts.laminate?lamC:0)+printImpCost;
-  const extraCost=artwork+planning+(enabledCosts.positive?positive:0)+cutting+foilBlock+foiling+dieCutter+dieCutImp+spotUV+pasting+folding+gathering+binding+(enabledCosts.rimming?rimming:0)+addMat+transport+stripping+numbering+perforating+creasing;
+  const printCost=platC+papC+(enabledCosts[`${activeTab}:laminate`]?lamC:0)+printImpCost;
+  const extraCost=artwork+planning+(enabledCosts[`${activeTab}:positive`]?positive:0)+cutting+foilBlock+foiling+dieCutter+dieCutImp+spotUV+pasting+folding+gathering+binding+(enabledCosts[`${activeTab}:rimming`]?rimming:0)+addMat+transport+stripping+numbering+perforating+creasing;
   const bookletCost=sheets.reduce((a,s)=>a+s.cost,0);
 
   // Multiple Sheets tab totals
@@ -493,10 +493,12 @@ export default function App(){
 
   return(
     <div style={{minHeight:"100vh",background:"#a0a0a8",display:"flex",alignItems:"center",
-      justifyContent:"center",padding:"10px",fontFamily:"'Segoe UI',system-ui,sans-serif"}}>
-      <div style={{width:"370px",height:"760px",background:BG,borderRadius:"36px",overflow:"hidden",
-        boxShadow:`0 0 0 6px ${K},0 0 0 9px #2a3d5a,0 24px 48px rgba(0,0,0,0.4)`,
-        display:"flex",flexDirection:"column",position:"relative"}}>
+      justifyContent:"center",padding:"min(10px, 2vw)",fontFamily:"'Segoe UI',system-ui,sans-serif",
+      boxSizing:"border-box"}}>
+      <div style={{width:"100%",maxWidth:"370px",height:"100vh",maxHeight:"760px",background:BG,
+        borderRadius:"min(36px, 4vw)",overflow:"hidden",
+        boxShadow:`0 0 0 min(6px,1vw) ${K},0 0 0 min(9px,1.5vw) #2a3d5a,0 24px 48px rgba(0,0,0,0.4)`,
+        display:"flex",flexDirection:"column",position:"relative",boxSizing:"border-box"}}>
 
         <div style={{background:K,height:"24px",display:"flex",alignItems:"center",
           justifyContent:"space-between",padding:"0 16px",flexShrink:0}}>
@@ -1244,8 +1246,8 @@ export default function App(){
                 {k:"addMat",l:"Additional Raw Materials",val:addMat,set:setAddMat},
                 {k:"transport",l:"Transport",val:transport,set:setTransport},
               ];
-              const notEnabled=defs.filter(d=>!enabledCosts[d.k]);
-              const enabled=defs.filter(d=>enabledCosts[d.k]);
+              const notEnabled=defs.filter(d=>!enabledCosts[`${activeTab}:${d.k}`]);
+              const enabled=defs.filter(d=>enabledCosts[`${activeTab}:${d.k}`]);
               return(<>
                 <div>
                   {enabled.map((d,i)=>{
@@ -1347,7 +1349,7 @@ export default function App(){
                 <div style={{display:"flex",gap:"6px"}}>
                   <button onClick={()=>setFieldDialog(null)} style={{flex:1,padding:"8px",background:BG,
                     border:`1px solid ${BD}`,borderRadius:"8px",color:MT,fontWeight:"700",cursor:"pointer",fontSize:"12px"}}>Cancel</button>
-                  <button onClick={()=>{fieldDialog.set(fieldDialog.val);toggleCost(fieldDialog.k,true);setFieldDialog(null);}}
+                  <button onClick={()=>{if(fieldDialog.set)fieldDialog.set(fieldDialog.val);toggleCost(fieldDialog.k);setFieldDialog(null);}}
                     style={{flex:1,padding:"8px",background:K,border:"none",borderRadius:"8px",color:"#fff",
                     fontWeight:"700",cursor:"pointer",fontSize:"12px"}}>OK</button>
                 </div>
