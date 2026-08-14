@@ -1212,10 +1212,16 @@ export default function App(){
                 const leaves=Math.floor(pps/2);
                 const usesFolding=bindKey==="Saddle Stitch"||bindKey==="Perfect";
                 const seq=[];
-                if(usesFolding){
-                  // Folded signature — pages must pair up (sum to sigSize+1) so they read in
-                  // order once nested/folded. Saddle Stitch nests across the whole book; Perfect
-                  // folds the same way within each signature, just doesn't nest signature-to-signature.
+                // Verified exact leaf order for 8 pages/sheet (16-page signature), confirmed against
+                // your real imposition sheet — front and back templates, offset by chunkStart.
+                const TEMPLATE_8UP={front:[7,8,12,3,11,4,0,15],back:[1,14,13,2,6,9,10,5]}; // 0-indexed offsets
+                if(usesFolding&&pps===8){
+                  const t=isFrontPage?TEMPLATE_8UP.front:TEMPLATE_8UP.back;
+                  t.forEach(off=>seq.push(chunkStart+off));
+                }else if(usesFolding){
+                  // Folded signature, other pages/sheet counts — pairing is mathematically correct
+                  // (sums to sigSize+1) but exact leaf arrangement isn't verified for this size —
+                  // edit cells if it doesn't match your bindery's convention.
                   for(let k=0;k<leaves;k++){
                     if(isFrontPage)seq.push(chunkStart+sigSize-1-2*k,chunkStart+2*k);
                     else seq.push(chunkStart+2*k+1,chunkStart+sigSize-2-2*k);
@@ -1320,8 +1326,10 @@ export default function App(){
                   </div>
                   <div style={{fontSize:"8px",color:MT,marginTop:"4px",marginBottom:"6px",textAlign:"center"}}>
                     {usesFolding
-                      ?<>Pairs auto-fill so Front+Back sum to {sigSize+1} ({bindKey}) — edit cells to match
-                        your bindery's exact leaf order.</>
+                      ?(pps===8
+                        ?<>✓ Exact verified imposition order for 8 pages/sheet ({bindKey}).</>
+                        :<>Pairs auto-fill so Front+Back sum to {sigSize+1} ({bindKey}) — leaf order not yet
+                          verified for {pps} pages/sheet, edit cells if needed.</>)
                       :<>{bindKey} doesn't fold — pages are simply cut apart, so numbers auto-fill sequentially.</>}
                   </div>
                   {/* CorelDraw-style page navigator */}
