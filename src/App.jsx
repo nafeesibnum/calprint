@@ -165,8 +165,11 @@ const sigCalc=(sig,effQty)=>{
     const plates=runs*g.colors;
     return{...g,runs,plates};
   });
-  const totalPlates=groups.reduce((a,g)=>a+g.plates,0);
   const totalRuns=groups.reduce((a,g)=>a+g.runs,0);
+  const isFB=sig.side==="Front&Back";
+  // Front&Back overrides the group color breakdown with a simple front+back color count —
+  // same total run count (sheets unaffected), just a different color/plate total.
+  const totalPlates=isFB?totalRuns*((sig.frontColors||4)+(sig.backColors||1)):groups.reduce((a,g)=>a+g.plates,0);
   const bothSide=sig.side&&sig.side!=="Single Side"; // Back&Back or Front&Back
   const plateCost=totalPlates*(sig.plateRate||0);
   // Both-side modes pair runs onto shared sheets (front+back on one physical sheet, or mirrored
@@ -302,14 +305,14 @@ export default function App(){
   const[msDup,setMsDup]=useState(0);
   const[msTotalPages,setMsTotalPages]=useState(73);
   const[msPrintRate,setMsPrintRate]=useState(SETTINGS_PRINT_RATE);
-  const PLAN_DEFAULTS={planCols:null,planRows:null,gapH:3,gapV:3,cutMarkSz:3,plateGrip:13,safeArea:true,cutMarksOn:true};
+  const PLAN_DEFAULTS={planCols:null,planRows:null,gapH:3,gapV:3,cutMarkSz:3,plateGrip:13,safeArea:true,cutMarksOn:true,planPageIdx:0,pageNumbers:{},sigCosts:{},minimized:true};
   const blankSig=(name)=>({id:Date.now()+Math.random(),name,paperW:pW,paperH:pH,sheetW:100,sheetH:100,paperCustomMode:true,
     pagesPerSheet:4,side:"Back&Back - Left-Right",plateRate:SETTINGS_PRINT_RATE,paperRate:5,showPlan:false,...PLAN_DEFAULTS,
-    groups:[{colors:4,pages:0},{colors:2,pages:0},{colors:1,pages:0}]});
+    groups:[{colors:4,pages:0}]});
   const[msSigs,setMsSigs]=useState([
     {id:1,name:"Inner Pages",paperW:914.4,paperH:457.2,sheetW:584.2,sheetH:457.2,pagesPerSheet:4,paperCustomMode:true,
       side:"Back&Back - Left-Right",plateRate:SETTINGS_PRINT_RATE,paperRate:8.75,showPlan:false,...PLAN_DEFAULTS,
-      groups:[{colors:4,pages:8},{colors:2,pages:60},{colors:1,pages:5}]},
+      groups:[{colors:1,pages:73}]},
     {id:2,name:"Cover Page",paperW:1016,paperH:635,sheetW:304.4,sheetH:254,pagesPerSheet:4,paperCustomMode:true,
       side:"Back&Back - Left-Right",plateRate:SETTINGS_PRINT_RATE,paperRate:80,showPlan:false,...PLAN_DEFAULTS,
       groups:[{colors:4,pages:4}]},
@@ -373,8 +376,9 @@ export default function App(){
   const msTotalPaperCost=msCalcs.reduce((a,s)=>a+s.paperCost,0);
   const msTotalPlateCost=msCalcs.reduce((a,s)=>a+s.plateCost,0);
   const msTotalPlates=msCalcs.reduce((a,s)=>a+s.totalPlates,0);
-  const msPrintingCost=msCalcs.reduce((a,s)=>a+s.totalPlates*(s.plateRate||0),0);
-  const msPrintCost=msTotalPaperCost+msTotalPlateCost+msPrintingCost;
+  const msPrintingCost=msCalcs.reduce((a,s)=>a+s.impressionCost,0);
+  const msSigCostsTotal=msCalcs.reduce((a,s)=>a+Object.values(s.sigCosts||{}).reduce((b,c)=>b+(c.val||0),0),0);
+  const msPrintCost=msTotalPaperCost+msTotalPlateCost+msPrintingCost+msSigCostsTotal;
 
   const activePrintCost=activeTab==="single"?printCost:msPrintCost;
   const activeBookletCost=activeTab==="single"?bookletCost:0;
@@ -1067,6 +1071,27 @@ export default function App(){
                   marginBottom:"5px",fontSize:"9px",color:ERR,fontWeight:"700"}}>
                   ⚠ Sheet size exceeds {pl2.name}'s max sheet size ({fs(pl2.maxL)}×{fs(pl2.maxW)}).</div>:null;
               })()}
+              {s.side==="Front&Back"&&<div style={{display:"flex",gap:"4px",marginBottom:"5px"}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:"7px",color:C,fontWeight:"700",marginBottom:"2px"}}>Front — Colors</div>
+                  <select value={s.frontColors||4} onChange={e=>updSig(s.id,{frontColors:Number(e.target.value)})}
+                    style={{width:"100%",padding:"4px 2px",border:`1.5px solid ${C}`,borderRadius:"5px",
+                    fontSize:"9px",outline:"none",background:CARD,boxSizing:"border-box"}}>
+                    {[1,2,3,4,5,6,7,8].map(n=><option key={n} value={n}>{n}</option>)}
+                  </select>
+                </div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:"7px",color:M,fontWeight:"700",marginBottom:"2px"}}>Back — Colors</div>
+                  <select value={s.backColors||1} onChange={e=>updSig(s.id,{backColors:Number(e.target.value)})}
+                    style={{width:"100%",padding:"4px 2px",border:`1.5px solid ${M}`,borderRadius:"5px",
+                    fontSize:"9px",outline:"none",background:CARD,boxSizing:"border-box"}}>
+                    {[1,2,3,4,5,6,7,8].map(n=><option key={n} value={n}>{n}</option>)}
+                  </select>
+                </div>
+                <div style={{background:BG,borderRadius:"6px",padding:"4px 6px",fontSize:"7px",
+                  color:MT,fontWeight:"700",alignSelf:"flex-end",whiteSpace:"nowrap"}}>
+                  overrides group colors</div>
+              </div>}
 
               {/* Color group breakdown — colors per group selected via 1-8 dropdown */}
               {s.groups.map((g,gi)=>(
@@ -1096,6 +1121,11 @@ export default function App(){
               ))}
               <button onClick={()=>addGroup(s.id)} style={{background:"none",border:"none",color:C,
                 fontSize:"10px",fontWeight:"700",cursor:"pointer",padding:"2px 0",marginBottom:"4px"}}>+ Add color group</button>
+              {!/cover/i.test(s.name)&&s.groups.reduce((a,g)=>a+(g.pages||0),0)!==msTotalPages&&
+                <div style={{background:"#FEF3C7",borderRadius:"6px",padding:"4px 8px",marginBottom:"4px",
+                  fontSize:"9px",color:"#92400E",fontWeight:"700"}}>
+                  ⚠ Color-group pages ({fmt(s.groups.reduce((a,g)=>a+(g.pages||0),0))}) don't match the
+                  book's total pages ({fmt(msTotalPages)}) set at the top.</div>}
 
               {/* Totals for this signature */}
               <div style={{background:BG,borderRadius:"7px",padding:"6px 8px",marginTop:"4px"}}>
@@ -1113,31 +1143,215 @@ export default function App(){
               <div style={{background:"#FEF2F2",borderRadius:"7px",padding:"6px 9px",marginTop:"5px"}}>
                 <div style={{display:"flex",justifyContent:"space-between"}}>
                   <span style={{fontSize:"10px",color:ERR,fontWeight:"700"}}>No of Impressions</span>
-                  <span style={{fontSize:"11px",color:ERR,fontWeight:"800"}}>{fmt(s.sheetsNeeded)}</span>
+                  <span style={{fontSize:"11px",color:ERR,fontWeight:"800"}}>{fmt(s.impressions)}</span>
                 </div>
                 <div style={{display:"flex",justifyContent:"space-between"}}>
                   <span style={{fontSize:"10px",color:ERR,fontWeight:"700"}}>Printing (Impression) cost.</span>
-                  <span style={{fontSize:"12px",color:ERR,fontWeight:"800"}}>Rs.{fmt(Math.round(s.plateCost))}</span>
+                  <span style={{fontSize:"12px",color:ERR,fontWeight:"800"}}>Rs.{fmt(Math.round(s.impressionCost))}</span>
                 </div>
                 <div style={{fontSize:"8px",color:"#B91C1C",marginTop:"2px"}}>
-                  {s.totalPlates}plates × Rs.{SETTINGS_PRINT_RATE}/plate (rate from Settings)</div>
+                  {s.totalPlates}plates × Rs.{s.plateRate}/plate (rate from Settings)</div>
               </div>
 
-              {/* Planning sheet — hidden by default, same style as Single Sheet */}
+              {/* Fields scoped to THIS Paper card only (e.g. Laminate just for Cover Page) */}
+              <div style={{marginTop:"5px"}}>
+                {Object.entries(s.sigCosts||{}).map(([k,c])=>(
+                  <div key={k} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                    padding:"3px 0",borderBottom:"1px solid #F3F4F6",marginBottom:"3px"}}>
+                    <span style={{fontSize:"9px",color:MT,fontWeight:"600"}}>{c.l}</span>
+                    <div style={{display:"flex",alignItems:"center",gap:"5px"}}>
+                      <span style={{fontSize:"11px",fontWeight:"800",color:T}}>Rs.{fmt(Math.round(c.val))}</span>
+                      <button onClick={()=>setFieldDialog({k,l:c.l,val:c.val,sigId:s.id})}
+                        style={{background:"none",border:"none",color:C,fontSize:"10px",cursor:"pointer",padding:0}}>✎</button>
+                      <button onClick={()=>{const nc2={...s.sigCosts};delete nc2[k];updSig(s.id,{sigCosts:nc2});}}
+                        style={{background:"none",border:"none",color:ERR,fontSize:"10px",fontWeight:"700",cursor:"pointer",padding:0}}>✕</button>
+                    </div>
+                  </div>
+                ))}
+                <select value="" onChange={e=>{
+                    if(!e.target.value)return;
+                    setFieldDialog({k:e.target.value,l:e.target.value,val:0,sigId:s.id});
+                  }}
+                  style={{width:"100%",padding:"5px 8px",border:`1.5px dashed ${tCol}`,borderRadius:"7px",
+                  fontSize:"9px",color:tCol,fontWeight:"700",outline:"none",background:CARD,boxSizing:"border-box"}}>
+                  <option value="">+ Add field to {s.name}...</option>
+                  {["Laminating","Positive","Foil Block","Foiling","Die Cutter","Die Cutting","Spot UV",
+                    "Stripping","Numbering","Perforating","Creasing","Additional Raw Materials"]
+                    .filter(l=>!(s.sigCosts||{})[l]).map(l=><option key={l} value={l}>{l}</option>)}
+                </select>
+              </div>
+
+              {/* Planning sheet — hidden by default, same style as Single Sheet, book pages built in */}
               <button onClick={()=>updSig(s.id,{showPlan:!s.showPlan})} style={{width:"100%",marginTop:"5px",
                 background:"none",border:"none",padding:"5px 0",cursor:"pointer",textAlign:"left"}}>
                 <span style={{fontSize:"10px",fontWeight:"700",color:tCol}}>
-                  {s.showPlan?"▾":"▸"} Planning Sheet — {s.fit.cols}×{s.fit.rows} = {s.perPaper} sheets/paper{s.fit.rot?" ↺":""}</span>
+                  {s.showPlan?"▾":"▸"} Planning Sheet</span>
               </button>
-              {s.showPlan&&<div style={{display:"flex",gap:"7px",marginTop:"4px"}}>
-                <SigCanvas pw={s.paperW} ph={s.paperH} jw={s.sheetW} jh={s.sheetH}
-                  cols={s.fit.cols} rows={s.fit.rows} col={tCol}/>
-                <div style={{flex:1,fontSize:"9px",color:MT,lineHeight:1.6}}>
-                  <div>Paper: {fs(s.paperW)}×{fs(s.paperH)}</div>
-                  <div>Sheet: {fs(s.sheetW)}×{fs(s.sheetH)}</div>
-                  <div style={{color:tCol,fontWeight:"700"}}>{s.fit.cols}×{s.fit.rows} = {s.perPaper} sheets/paper{s.fit.rot?" ↺":""}</div>
+              {s.showPlan&&s.totalRuns>0&&(()=>{
+                const totalBookPages=s.groups.reduce((a,g)=>a+g.pages,0);
+                const totalPlanPages=s.totalRuns;
+                const pIdx=Math.min(s.planPageIdx||0,totalPlanPages-1);
+                const pps=s.pagesPerSheet;
+                // Canvas sizing — same conventions as Single Sheet's planning canvas
+                // No gap between page cells for the book planning grid — pages sit edge to edge.
+                const gapH2=0,gapV2=0;
+                const grip2=s.plateGrip||13,eM2=5,cutMk2=s.cutMarkSz||3;
+                // Real imposition: fit the actual Job L×W (from the top of this tab) onto the sheet —
+                // this is what determines cols/rows, not a guessed square grid. Verified: 8.5"×5.5" job
+                // on a 24"×18" sheet gives 4×2=8 ups, matching "8 pages/sheet" exactly.
+                const jobFit=fitCalc(s.sheetW,s.sheetH,grip2,eM2,gapH2,msProdW,msProdH);
+                const cols=s.planCols||jobFit.cols||1;
+                const rows=s.planRows||jobFit.rows||1;
+                const jobW=jobFit.rot?msProdH:msProdW;
+                const jobH=jobFit.rot?msProdW:msProdH;
+                const cellCount=cols*rows;
+                const sheetIdx=Math.floor(pIdx/2);
+                const isFrontPage=pIdx%2===0;
+                const sigSize=pps*2;
+                const chunkStart=sheetIdx*sigSize+1;
+                const leaves=Math.floor(pps/2);
+                const usesFolding=bindKey==="Saddle Stitch"||bindKey==="Perfect";
+                const seq=[];
+                if(usesFolding){
+                  // Folded signature — pages must pair up (sum to sigSize+1) so they read in
+                  // order once nested/folded. Saddle Stitch nests across the whole book; Perfect
+                  // folds the same way within each signature, just doesn't nest signature-to-signature.
+                  for(let k=0;k<leaves;k++){
+                    if(isFrontPage)seq.push(chunkStart+sigSize-1-2*k,chunkStart+2*k);
+                    else seq.push(chunkStart+2*k+1,chunkStart+sigSize-2-2*k);
+                  }
+                }else{
+                  // Spiral/Hard Cover — pages are cut apart flat, no folding, so no pairing needed:
+                  // just straight sequential order, one plan page = one independent batch of pages.
+                  for(let i=0;i<pps;i++)seq.push(pIdx*pps+i+1);
+                }
+                const CX2=230,CY2=170,sc2=Math.min(CX2/s.sheetW,CY2/s.sheetH);
+                const dW2=Math.max(Math.round(s.sheetW*sc2),60),dH2=Math.max(Math.round(s.sheetH*sc2),60);
+                const gPx2=Math.round(grip2*sc2),ePx2=Math.round(eM2*sc2);
+                const jWp2=Math.round(jobW*sc2),jHp2=Math.round(jobH*sc2);
+                const gHp2=Math.round(gapH2*sc2),gVp2=Math.round(gapV2*sc2);
+                const lWp2=cols*jWp2+(cols-1)*gHp2,lHp2=rows*jHp2+(rows-1)*gVp2;
+                const sX2=ePx2+Math.max(0,Math.round(((dW2-2*ePx2)-lWp2)/2));
+                const sY2=gPx2+Math.max(0,Math.round(((dH2-gPx2-ePx2)-lHp2)/2));
+                const sfO2=Math.round(8*sc2);
+                return(
+                <div style={{marginTop:"4px"}}>
+                  {/* Cols/Rows adjust */}
+                  <div style={{display:"flex",justifyContent:"center",gap:"8px",marginBottom:"6px"}}>
+                    {[["Columns",cols,c=>updSig(s.id,{planCols:Math.max(1,c-1)}),c=>updSig(s.id,{planCols:c+1}),C],
+                      ["Rows",rows,r=>updSig(s.id,{planRows:Math.max(1,r-1)}),r=>updSig(s.id,{planRows:r+1}),M]
+                    ].map(([lbl,val,dec,inc,col])=>(
+                      <div key={lbl} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:"2px"}}>
+                        <span style={{fontSize:"7px",color:col,fontWeight:"700"}}>{lbl}</span>
+                        <div style={{display:"flex",gap:"1px",alignItems:"center"}}>
+                          <button onClick={()=>dec(val)} style={{width:"18px",height:"20px",flexShrink:0,background:BG,
+                            border:`1px solid ${col}`,borderRadius:"3px 0 0 3px",cursor:"pointer",fontWeight:"800",
+                            color:col,fontSize:"11px"}}>−</button>
+                          <span style={{width:"20px",textAlign:"center",fontSize:"11px",fontWeight:"800",color:col}}>{val}</span>
+                          <button onClick={()=>inc(val)} style={{width:"18px",height:"20px",flexShrink:0,background:col+"20",
+                            border:`1px solid ${col}`,borderRadius:"0 3px 3px 0",cursor:"pointer",fontWeight:"800",
+                            color:col,fontSize:"11px"}}>+</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {/* Cut Mark / Plate Grip / Binding */}
+                  <div style={{display:"flex",gap:"4px",marginBottom:"6px"}}>
+                    {[["Cut Mark",cutMk2,v=>updSig(s.id,{cutMarkSz:v}),K],["Plate Grip",grip2,v=>updSig(s.id,{plateGrip:v}),WARN]
+                    ].map(([lbl,val,set,col])=>(
+                      <div key={lbl} style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:"7px",color:MT,fontWeight:"600",marginBottom:"2px",textAlign:"center"}}>{lbl}</div>
+                        <NumField unit={unit} mm={val} onMM={set}
+                          style={{width:"100%",padding:"4px 2px",border:`1.5px solid ${col}`,borderRadius:"5px",
+                          fontSize:"10px",textAlign:"center",color:col,fontWeight:"700",outline:"none",boxSizing:"border-box"}}/>
+                      </div>
+                    ))}
+                    <div style={{flex:"1.4",minWidth:0}}>
+                      <div style={{fontSize:"7px",color:MT,fontWeight:"600",marginBottom:"2px",textAlign:"center"}}>Binding</div>
+                      <select value={bindKey} onChange={e=>setBindKey(e.target.value)}
+                        style={{width:"100%",padding:"4px 2px",border:`1.5px solid ${BD}`,borderRadius:"5px",
+                        fontSize:"9px",outline:"none",background:CARD,boxSizing:"border-box"}}>
+                        {Object.keys(BIND_RATES).map(b=><option key={b}>{b}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <div style={{fontSize:"8px",color:MT,marginBottom:"3px",textAlign:"center"}}>
+                    1 page: {fs(jobW)}×{fs(jobH)}
+                  </div>
+                  {/* Cut Marks / Safe Area toggles */}
+                  <div style={{display:"flex",gap:"4px",marginBottom:"6px"}}>
+                    <Tog lbl="Cut Marks" on={s.cutMarksOn} cb={()=>updSig(s.id,{cutMarksOn:!s.cutMarksOn})} col={K}/>
+                    <Tog lbl="Safe Area" on={s.safeArea} cb={()=>updSig(s.id,{safeArea:!s.safeArea})} col={SUC}/>
+                  </div>
+                  <div style={{fontSize:"8px",color:tCol,fontWeight:"700",marginBottom:"4px",textAlign:"center"}}>
+                    {usesFolding?`Sheet ${sheetIdx+1} — ${isFrontPage?"Front":"Back"}`:`Page batch ${pIdx+1}`} ({bindKey}) · {totalBookPages} pages in {totalPlanPages} sheet-sides
+                  </div>
+                  {/* Canvas */}
+                  <div style={{width:`${dW2}px`,height:`${dH2}px`,background:"#fff",border:`2px solid ${K}`,
+                    position:"relative",margin:"0 auto",overflow:"hidden"}}>
+                    <div style={{position:"absolute",top:0,left:0,right:0,height:`${gPx2}px`,
+                      background:"rgba(150,150,150,0.18)",borderBottom:`1px dashed ${MT}`}}/>
+                    {s.safeArea&&<div style={{position:"absolute",pointerEvents:"none",
+                      top:`${gPx2+sfO2}px`,left:`${ePx2+sfO2}px`,
+                      width:`${Math.max(dW2-2*ePx2-2*sfO2,0)}px`,height:`${Math.max(dH2-gPx2-ePx2-2*sfO2,0)}px`,
+                      border:`1px dashed ${SUC}`}}/>}
+                    {Array.from({length:cellCount}).map((_,ci)=>{
+                      const r=Math.floor(ci/cols),c=ci%cols;
+                      const x=sX2+c*(jWp2+gHp2),y=sY2+r*(jHp2+gVp2);
+                      if(x+jWp2>dW2||y+jHp2>dH2)return null;
+                      const key=`${pIdx}-${ci}`;
+                      const autoVal=seq[ci];
+                      const val=s.pageNumbers[key]??((autoVal&&autoVal<=totalBookPages)?autoVal:"");
+                      const cellCol=[C,M,"#D4A000",SUC][ci%4];
+                      return(
+                        <input key={ci} value={val}
+                          onChange={e=>updSig(s.id,{pageNumbers:{...s.pageNumbers,[key]:e.target.value}})}
+                          style={{position:"absolute",left:`${x}px`,top:`${y}px`,width:`${jWp2}px`,height:`${jHp2}px`,
+                          border:`0.5px solid ${cellCol}`,textAlign:"center",fontSize:"9px",fontWeight:"700",
+                          color:cellCol,outline:"none",boxSizing:"border-box",background:cellCol+"22",padding:0}}/>
+                      );
+                    })}
+                    {s.cutMarksOn&&Array.from({length:4}).map((_,ci)=>{
+                      const positions=[[0,0],[dW2-1,0],[0,dH2-1],[dW2-1,dH2-1]];
+                      const[cx,cy]=positions[ci];
+                      return<div key={ci} style={{position:"absolute",left:`${cx-3}px`,top:`${cy-3}px`,
+                        width:"6px",height:"6px",border:`1px solid ${K}`,pointerEvents:"none"}}/>;
+                    })}
+                  </div>
+                  <div style={{fontSize:"8px",color:MT,marginTop:"4px",marginBottom:"6px",textAlign:"center"}}>
+                    {usesFolding
+                      ?<>Pairs auto-fill so Front+Back sum to {sigSize+1} ({bindKey}) — edit cells to match
+                        your bindery's exact leaf order.</>
+                      :<>{bindKey} doesn't fold — pages are simply cut apart, so numbers auto-fill sequentially.</>}
+                  </div>
+                  {/* CorelDraw-style page navigator */}
+                  <div style={{display:"flex",alignItems:"center",gap:"4px",marginBottom:"3px"}}>
+                    <button onClick={()=>updSig(s.id,{planPageIdx:0})} disabled={pIdx===0}
+                      style={{border:"none",background:"none",color:pIdx===0?BD:tCol,cursor:pIdx===0?"default":"pointer",
+                      fontSize:"11px",padding:"2px 4px"}}>|◂</button>
+                    <button onClick={()=>updSig(s.id,{planPageIdx:Math.max(0,pIdx-1)})} disabled={pIdx===0}
+                      style={{border:"none",background:"none",color:pIdx===0?BD:tCol,cursor:pIdx===0?"default":"pointer",
+                      fontSize:"11px",padding:"2px 4px"}}>◂</button>
+                    <span style={{fontSize:"9px",color:MT,fontWeight:"600",minWidth:"46px",textAlign:"center"}}>
+                      {pIdx+1} of {totalPlanPages}</span>
+                    <button onClick={()=>updSig(s.id,{planPageIdx:Math.min(totalPlanPages-1,pIdx+1)})} disabled={pIdx===totalPlanPages-1}
+                      style={{border:"none",background:"none",color:pIdx===totalPlanPages-1?BD:tCol,
+                      cursor:pIdx===totalPlanPages-1?"default":"pointer",fontSize:"11px",padding:"2px 4px"}}>▸</button>
+                    <button onClick={()=>updSig(s.id,{planPageIdx:totalPlanPages-1})} disabled={pIdx===totalPlanPages-1}
+                      style={{border:"none",background:"none",color:pIdx===totalPlanPages-1?BD:tCol,
+                      cursor:pIdx===totalPlanPages-1?"default":"pointer",fontSize:"11px",padding:"2px 4px"}}>▸|</button>
+                  </div>
+                  <div style={{display:"flex",gap:"0",borderBottom:`1px solid ${BD}`,overflowX:"auto"}}>
+                    {Array.from({length:totalPlanPages}).map((_,i)=>(
+                      <button key={i} onClick={()=>updSig(s.id,{planPageIdx:i})}
+                        style={{padding:"4px 8px",border:"none",borderBottom:`2px solid ${i===pIdx?tCol:"transparent"}`,
+                        background:"none",color:i===pIdx?tCol:MT,fontWeight:i===pIdx?"700":"600",
+                        fontSize:"9px",cursor:"pointer",whiteSpace:"nowrap",flexShrink:0}}>
+                        Page {i+1}</button>
+                    ))}
+                  </div>
                 </div>
-              </div>}
+              );})()}
               </>}
             </div>
           );})}
@@ -1217,6 +1431,12 @@ export default function App(){
                     <span style={{fontSize:"10px",color:MT,fontWeight:"600"}}>Printing (Impression) ● — {fmt(s.impressions)} imp</span>
                     <span style={{fontSize:"12px",fontWeight:"800",color:T}}>Rs.{fmt(Math.round(s.impressionCost))}</span>
                   </div>
+                  {Object.entries(s.sigCosts||{}).map(([k,c])=>(
+                    <div key={k} style={{display:"flex",justifyContent:"space-between",marginTop:"2px"}}>
+                      <span style={{fontSize:"10px",color:MT,fontWeight:"600"}}>{c.l}</span>
+                      <span style={{fontSize:"12px",fontWeight:"800",color:T}}>Rs.{fmt(Math.round(c.val))}</span>
+                    </div>
+                  ))}
                 </div>
               ))}
             </div>}
@@ -1349,7 +1569,15 @@ export default function App(){
                 <div style={{display:"flex",gap:"6px"}}>
                   <button onClick={()=>setFieldDialog(null)} style={{flex:1,padding:"8px",background:BG,
                     border:`1px solid ${BD}`,borderRadius:"8px",color:MT,fontWeight:"700",cursor:"pointer",fontSize:"12px"}}>Cancel</button>
-                  <button onClick={()=>{if(fieldDialog.set)fieldDialog.set(fieldDialog.val);toggleCost(fieldDialog.k);setFieldDialog(null);}}
+                  <button onClick={()=>{
+                      if(fieldDialog.sigId){
+                        updSig(fieldDialog.sigId,{sigCosts:{...(msSigs.find(x=>x.id===fieldDialog.sigId)||{}).sigCosts,[fieldDialog.k]:{l:fieldDialog.l,val:fieldDialog.val}}});
+                      }else{
+                        if(fieldDialog.set)fieldDialog.set(fieldDialog.val);
+                        toggleCost(fieldDialog.k);
+                      }
+                      setFieldDialog(null);
+                    }}
                     style={{flex:1,padding:"8px",background:K,border:"none",borderRadius:"8px",color:"#fff",
                     fontWeight:"700",cursor:"pointer",fontSize:"12px"}}>OK</button>
                 </div>
