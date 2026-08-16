@@ -18,10 +18,14 @@ const SETTINGS_PRINT_RATE=1200; // Rs/plate — comes from the Settings page (no
 // depends on lives here, editable from the Settings screen, not inline in Plan Sheet.
 const DEF_PRODUCTS=["Visiting Card","Bill Books","UW Box","Hang Tags"];
 const DEF_PAPERS=[
-  {id:1,name:"Bank Paper 80gsm",gsm:80,l:914.4,w:609.6,packPrice:8500,packSheets:500},
-  {id:2,name:"Art Paper 100gsm",gsm:100,l:914.4,w:609.6,packPrice:9000,packSheets:500},
-  {id:3,name:"Box Board 300gsm",gsm:300,l:787.4,w:1092.2,packPrice:15000,packSheets:250},
-  {id:4,name:"Art Board 310gsm",gsm:310,l:635,w:1117.6,packPrice:16000,packSheets:250},
+  {id:1,name:"Bank Paper 80gsm",gsm:80,l:914.4,w:609.6,packPrice:8500,packSheets:500,
+    sheetSizes:[{l:609.6,w:457.2},{l:304.8,w:228.6},{l:304.8,w:203.2},{l:152.4,w:152.4}]}, // 24x18, 12x9, 12x8, 6x6
+  {id:2,name:"Art Paper 100gsm",gsm:100,l:914.4,w:609.6,packPrice:9000,packSheets:500,
+    sheetSizes:[{l:609.6,w:457.2},{l:457.2,w:304.8}]}, // 24x18, 18x12
+  {id:3,name:"Box Board 300gsm",gsm:300,l:787.4,w:1092.2,packPrice:15000,packSheets:250,
+    sheetSizes:[{l:546.1,w:393.7},{l:393.7,w:273.05}]},
+  {id:4,name:"Art Board 310gsm",gsm:310,l:635,w:1117.6,packPrice:16000,packSheets:250,
+    sheetSizes:[{l:558.8,w:317.5},{l:317.5,w:254},{l:211.6,w:203.2},{l:158.75,w:127}]}, // 22x12.5, 12.5x10, 8.33x8, 6.25x5
 ];
 const DEF_PLATES=[
   {id:1,name:"GTO52",maxL:520,maxW:360,minL:180,minW:105,printL:505,printW:340,grip:38.1,impRate:750},
@@ -139,6 +143,36 @@ const OptCostRow=({lbl,val,set,enabled,onToggle,hasDD,ddOpts,ddKey,setDdk,hasPlu
     </div>
   );
 // Best-fit cols/rows/ups for a job size (jw×jh) on a paper (pw×ph), trying both orientations
+// Reads a PDF's page count and first page's trim size directly from its raw bytes —
+// no external library needed. Works for standard (non-encrypted) PDFs by scanning for
+// /Type /Page objects and /MediaBox entries (page size, in points).
+// Derives sensible sheet sizes by cutting a paper into even pieces (halves, thirds, quarters...) —
+// e.g. a 24×36 paper suggests 24×18, 12×9, 12×8, 6×6 etc. Verified against real examples.
+const deriveSheetSizes=(paperL,paperW)=>{
+  const seen=new Set();const out=[];
+  for(let i=1;i<=6;i++)for(let j=1;j<=6;j++){
+    const l=paperL/i,w=paperW/j;
+    if(l<40||w<40)continue;
+    const big=Math.max(l,w),small=Math.min(l,w);
+    const key=Math.round(big*10)+"x"+Math.round(small*10);
+    if(!seen.has(key)){seen.add(key);out.push({l:big,w:small,pieces:i*j});}
+  }
+  out.sort((a,b)=>a.pieces-b.pieces); // simplest cuts (fewest pieces) first
+  return out;
+};
+const parsePdfInfo=async(file)=>{
+  const buf=await file.arrayBuffer();
+  const bytes=new Uint8Array(buf);
+  let str="";
+  for(let i=0;i<bytes.length;i++)str+=String.fromCharCode(bytes[i]); // latin1-style 1:1 byte mapping
+  const pageMatches=str.match(/\/Type\s*\/Page(?!s)/g)||[];
+  const mbMatches=[...str.matchAll(/\/MediaBox\s*\[\s*([\-\d.]+)\s+([\-\d.]+)\s+([\-\d.]+)\s+([\-\d.]+)\s*\]/g)];
+  if(!mbMatches.length)return null;
+  const[,x0,y0,x1,y1]=mbMatches[0];
+  const wPt=Math.abs(parseFloat(x1)-parseFloat(x0)),hPt=Math.abs(parseFloat(y1)-parseFloat(y0));
+  const wMM=wPt*0.3527777778,hMM=hPt*0.3527777778; // 1 pt = 1/72 inch = 0.3527...mm
+  return{pageCount:Math.max(pageMatches.length,1),pageWMM:wMM,pageHMM:hMM};
+};
 const fitCalc=(pw,ph,grip,em,gap,jw,jh)=>{
   const c1=Math.floor((pw-2*em)/(jw+gap)),r1=Math.floor((ph-grip-em)/(jh+gap));
   const u1=Math.max(c1,0)*Math.max(r1,0);
@@ -210,9 +244,13 @@ export default function App(){
   const PRODUCT_PRESETS=["Certificate","Wedding Card","Box","Visiting Card","Letterhead","Brochure"];
 
   // Paper — sourced from Settings (paper size comes from settings; sheet size stays editable here)
-  const paperList=[...settings.papers.map(p=>({n:p.name,w:Math.max(p.l,p.w),h:Math.min(p.l,p.w),rate:p.packSheets?p.packPrice/p.packSheets:0})),{n:"Custom",w:0,h:0,rate:0}];
+  const paperList=[...settings.papers.map(p=>{
+      const w=Math.max(p.l,p.w),h=Math.min(p.l,p.w);
+      return{n:`${p.name} ${fs(w)}×${fs(h)}`,shortName:p.name,w,h,rate:p.packSheets?p.packPrice/p.packSheets:0,
+        sheetSizes:p.sheetSizes||[]};
+    }),{n:"+ Add New Paper",shortName:"+ Add New Paper",w:0,h:0,rate:0,sheetSizes:[],isAddNew:true}];
   const[pi,setPi]=useState(0);const[cL,setCL2]=useState(450);const[cW2,setCW2]=useState(320);
-  const pp=paperList[Math.min(pi,paperList.length-1)];const isC=pp.n==="Custom";
+  const pp=paperList[Math.min(pi,paperList.length-1)];const isC=false;
   const pW=isC?Math.max(cL,cW2):Math.max(pp.w,pp.h);
   const pH=isC?Math.min(cL,cW2):Math.min(pp.w,pp.h);
   // Sheet size — shown next to Paper; editable override of the raw paper's working size
@@ -221,20 +259,23 @@ export default function App(){
   const[customMode,setCustomMode]=useState(false); // explicitly chose "Custom" in the Sheet Size dropdown
   const sheetL=isC?pW:(shOv?shOv.l:pW), sheetH=isC?pH:(shOv?shOv.h:pH);
   const curSheetL=isC?cL:sheetL,curSheetH=isC?cW2:sheetH;
-  const presetIdx=settings.sheetPresets.findIndex(sp=>Math.round(sp.l)===Math.round(curSheetL)&&Math.round(sp.w)===Math.round(curSheetH));
+  // Sheet sizes come from the selected paper's own dimensions (e.g. 24×36 paper → 24×18, 12×9...),
+  // not a fixed global list — falls back to Settings' Frequent Sizes only for Custom paper.
+  const sheetSizeOpts=(pp.sheetSizes&&pp.sheetSizes.length)?pp.sheetSizes:deriveSheetSizes(pW,pH).slice(0,6);
+  const presetIdx=sheetSizeOpts.findIndex(sp=>Math.round(sp.l)===Math.round(curSheetL)&&Math.round(sp.w)===Math.round(curSheetH));
   const sheetSizeSel=customMode?"Custom":(presetIdx>=0?String(presetIdx):"Custom");
 
   // Core
   const[platK,setPlatK]=useState(settings.plates[0]?.name||"GTO52");
   const pl=settings.plates.find(p=>p.name===platK)||settings.plates[0]||{impRate:750,grip:38.1};
   const[colS,setColS]=useState("4 Colors");const nc=nC(colS);
-  const SIDE_OPTS=["Single Side","Back&Back - Left-Right","Back&Back - Top-Bottom","Front&Back"];
+  const SIDE_OPTS=["Single Side","Back&Back - Left-Right","Back&Back - Top-Bottom","Force Back&Back","Front&Back"];
   const[sideMode,setSideMode]=useState("Single Side");
   const both=sideMode!=="Single Side";
   const isFB=sideMode==="Front&Back";
-  const bbLR=sideMode==="Back&Back - Left-Right";
+  const fBB=sideMode==="Force Back&Back";
+  const bbLR=sideMode==="Back&Back - Left-Right"||fBB;
   const bbTB=sideMode==="Back&Back - Top-Bottom";
-  const fBB=false; // Force Back&Back removed — parity constraint no longer applies at all
   const[fbColF,setFbColF]=useState("4 Colors");const[fbColB,setFbColB]=useState("1 Color");
   const[pGrip,setPGrip]=useState(13);
   const[jW,setJW]=useState(90);const[jH,setJH]=useState(55);
@@ -353,7 +394,7 @@ export default function App(){
   const sheetsPerPaper=sheetsFromPaper(pW,pH,sheetL,sheetH).ups; // how many cut sheets come from one raw paper
   const nPap=Math.ceil(sheetsNeed/sheetsPerPaper); // raw papers to buy
   const ePl=sbsOn?Math.ceil(effNc/2):effNc;
-  const platC=ePl*(pl.impRate/1000)*chSh;const papC=nPap*pRate;
+  const platC=ePl*pl.impRate;const papC=nPap*pRate;
   const printImpCost=(imp/1000)*pl.impRate; // Printing(Impression) cost — separate from Plate cost
   const lamJW=lW+2*cmSz+1,lamJH=lH+2*cmSz+1;
   const lamSq=m2i(lamJW)*m2i(lamJH);
@@ -564,6 +605,16 @@ export default function App(){
                 style={{width:"100%",padding:"5px 6px",border:`1.5px solid ${BD}`,borderRadius:"7px",
                 fontSize:"12px",outline:"none",fontWeight:"700",boxSizing:"border-box"}}/>
               <datalist id="product-presets">{PRODUCT_PRESETS.map(p=><option key={p} value={p}/>)}</datalist>
+              <label style={{display:"flex",alignItems:"center",gap:"5px",marginTop:"5px",cursor:"pointer",
+                padding:"5px 8px",border:`1.5px dashed ${C}`,borderRadius:"7px",background:CL}}>
+                <span style={{fontSize:"11px",color:C,fontWeight:"700"}}>📄 Upload artwork PDF (auto-fills Job L/W)</span>
+                <input type="file" accept="application/pdf" style={{display:"none"}} onChange={async e=>{
+                    const file=e.target.files[0];if(!file)return;
+                    const info=await parsePdfInfo(file);
+                    if(info){setJW(info.pageWMM);setJH(info.pageHMM);}
+                    e.target.value="";
+                  }}/>
+              </label>
             </div>
 
             {/* Job L×W + Colors + Qty — right next to Product Name */}
@@ -574,6 +625,9 @@ export default function App(){
                   style={{width:"100%",padding:"5px 3px",border:`2px solid ${M}`,borderRadius:"6px",
                   fontSize:"12px",textAlign:"center",color:M,fontWeight:"800",outline:"none",boxSizing:"border-box"}}/>
               </div>
+              <button onClick={()=>{const t=jW;setJW(jH);setJH(t);}} title="Swap Length ↔ Width"
+                style={{background:BG,border:`1px solid ${BD}`,borderRadius:"6px",padding:"5px 4px",
+                cursor:"pointer",color:MT,fontWeight:"800",fontSize:"11px",flexShrink:0,marginBottom:"1px"}}>⇄</button>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:"8px",color:M,fontWeight:"700",marginBottom:"2px"}}>Job W</div>
                 <NumField unit={unit} mm={jH} onMM={v=>{setJH(v);}}
@@ -611,13 +665,13 @@ export default function App(){
                 <select value={sheetSizeSel} onChange={e=>{
                     if(e.target.value==="Custom"){setCustomMode(true);return;}
                     setCustomMode(false);
-                    const preset=settings.sheetPresets[Number(e.target.value)];
+                    const preset=sheetSizeOpts[Number(e.target.value)];
                     if(!preset)return;
                     if(isC){setCL2(preset.l);setCW2(preset.w);}else setShOv({l:preset.l,h:preset.w});
                   }}
                   style={{width:"100%",padding:"5px 3px",border:`1.5px solid ${BD}`,borderRadius:"6px",
                   fontSize:"10px",outline:"none",background:CARD,boxSizing:"border-box"}}>
-                  {settings.sheetPresets.map((sp,i)=><option key={i} value={i}>{fs(sp.l)}×{fs(sp.w)}</option>)}
+                  {sheetSizeOpts.map((sp,i)=><option key={i} value={i}>{fs(sp.l)}×{fs(sp.w)}</option>)}
                   <option value="Custom">Custom</option>
                 </select>
               </div>
@@ -630,6 +684,11 @@ export default function App(){
                   style={{width:"100%",padding:"5px 3px",border:`1.5px solid ${C}`,borderRadius:"6px",
                   fontSize:"12px",textAlign:"center",color:C,fontWeight:"700",outline:"none",boxSizing:"border-box"}}/>
               </div>
+              <button onClick={rotateSheet}
+                title="Change Length to Width, Width to Length"
+                style={{background:BG,border:`1px solid ${BD}`,borderRadius:"6px",padding:"5px 5px",
+                cursor:"pointer",color:MT,fontWeight:"800",fontSize:"12px",flexShrink:0,
+                display:"flex",alignItems:"center",justifyContent:"center",height:"28px",marginBottom:"1px"}}>⇄</button>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:"8px",color:MT,fontWeight:"600",marginBottom:"2px"}}>Sheet W</div>
                 <NumField unit={unit} mm={isC?cW2:sheetH}
@@ -637,11 +696,6 @@ export default function App(){
                   style={{width:"100%",padding:"5px 3px",border:`1.5px solid ${C}`,borderRadius:"6px",
                   fontSize:"12px",textAlign:"center",color:C,fontWeight:"700",outline:"none",boxSizing:"border-box"}}/>
               </div>
-              <button onClick={rotateSheet}
-                title="Change Length to Width, Width to Length"
-                style={{background:BG,border:`1px solid ${BD}`,borderRadius:"6px",padding:"5px 6px",
-                cursor:"pointer",color:MT,fontWeight:"800",fontSize:"12px",flexShrink:0,
-                display:"flex",alignItems:"center",justifyContent:"center",height:"28px",alignSelf:"flex-end"}}>⟲</button>
             </div>}
             {(sheetExceedsPaper||jobExceedsPaper)&&<div style={{background:"#FEE2E2",borderRadius:"6px",
               padding:"4px 8px",marginBottom:"5px",fontSize:"9px",color:ERR,fontWeight:"700"}}>
@@ -903,6 +957,17 @@ export default function App(){
               <Tog lbl="Multiple copies" on={msMultiCopies} cb={()=>{setMsMultiCopies(!msMultiCopies);if(!msMultiCopies)setMsMultiSheet(false);}} col="#7C3AED"/>
             </div>
 
+            <label style={{display:"flex",alignItems:"center",gap:"5px",marginBottom:"7px",cursor:"pointer",
+              padding:"5px 8px",border:`1.5px dashed ${C}`,borderRadius:"7px",background:CL}}>
+              <span style={{fontSize:"11px",color:C,fontWeight:"700"}}>📖 Upload book PDF (auto-fills pages + Job L/W)</span>
+              <input type="file" accept="application/pdf" style={{display:"none"}} onChange={async e=>{
+                  const file=e.target.files[0];if(!file)return;
+                  const info=await parsePdfInfo(file);
+                  if(info){setMsTotalPages(info.pageCount);setMsProdW(info.pageWMM);setMsProdH(info.pageHMM);}
+                  e.target.value="";
+                }}/>
+            </label>
+
             <div style={{display:"flex",gap:"4px",marginBottom:"5px"}}>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:"8px",color:MT,fontWeight:"600",marginBottom:"2px"}}>Product</div>
@@ -917,6 +982,9 @@ export default function App(){
                   style={{width:"100%",padding:"5px 3px",border:`1.5px solid ${M}`,borderRadius:"6px",
                   fontSize:"12px",textAlign:"center",color:M,fontWeight:"700",outline:"none",boxSizing:"border-box"}}/>
               </div>
+              <button onClick={()=>{const t=msProdW;setMsProdW(msProdH);setMsProdH(t);}} title="Swap Length ↔ Width"
+                style={{background:BG,border:`1px solid ${BD}`,borderRadius:"6px",padding:"5px 4px",
+                cursor:"pointer",color:MT,fontWeight:"800",fontSize:"11px",flexShrink:0,marginBottom:"1px"}}>⇄</button>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:"8px",color:M,fontWeight:"700",marginBottom:"2px"}}>Job W</div>
                 <NumField unit={unit} mm={msProdH} onMM={setMsProdH}
@@ -990,45 +1058,54 @@ export default function App(){
               <div style={{display:"flex",gap:"4px",marginBottom:"5px"}}>
                 <div style={{flex:"1.3",minWidth:0}}>
                   <div style={{fontSize:"8px",color:C,fontWeight:"700",marginBottom:"2px"}}>Paper</div>
-                  <select value={s.paperCustomMode?"Custom":(s.paperName||paperList[0]?.n)}
+                  <select value={s.paperName||"+ Add New Paper"}
                     onChange={e=>{
-                      if(e.target.value==="Custom"){updSig(s.id,{paperCustomMode:true});return;}
-                      const p=paperList.find(x=>x.n===e.target.value);
-                      if(p)updSig(s.id,{paperCustomMode:false,paperName:p.n,paperW:p.w,paperH:p.h});
+                      if(e.target.value==="+ Add New Paper"){setScreen("settings");return;}
+                      const p=paperList.find(x=>x.shortName===e.target.value);
+                      if(p)updSig(s.id,{sheetCustomMode:false,paperName:p.shortName,paperW:p.w,paperH:p.h,sheetW:p.w,sheetH:p.h});
                     }}
                     style={{width:"100%",padding:"4px 3px",border:`1.5px solid ${C}`,borderRadius:"5px",
                     fontSize:"10px",outline:"none",background:CARD,color:C,fontWeight:"700",boxSizing:"border-box"}}>
-                    {paperList.map(p=><option key={p.n}>{p.n}</option>)}
+                    {paperList.map(p=><option key={p.n} value={p.shortName}>{p.n}</option>)}
                   </select>
                 </div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:"8px",color:MT,fontWeight:"600",marginBottom:"2px"}}>Sheet Size</div>
+                  {(()=>{
+                    const curPaper=paperList.find(x=>x.shortName===s.paperName);
+                    const sigSheetOpts=(curPaper&&curPaper.sheetSizes&&curPaper.sheetSizes.length)?curPaper.sheetSizes:deriveSheetSizes(s.paperW,s.paperH).slice(0,6);
+                    const sigPresetIdx=sigSheetOpts.findIndex(sp=>Math.round(sp.l)===Math.round(s.sheetW)&&Math.round(sp.w)===Math.round(s.sheetH));
+                    const sigSel=s.sheetCustomMode?"Custom":(sigPresetIdx>=0?String(sigPresetIdx):"Custom");
+                    return(
+                      <select value={sigSel} onChange={e=>{
+                          if(e.target.value==="Custom"){updSig(s.id,{sheetCustomMode:true});return;}
+                          const preset=sigSheetOpts[Number(e.target.value)];
+                          if(preset)updSig(s.id,{sheetCustomMode:false,sheetW:preset.l,sheetH:preset.w});
+                        }}
+                        style={{width:"100%",padding:"4px 3px",border:`1.5px solid ${BD}`,borderRadius:"5px",
+                        fontSize:"9px",outline:"none",background:CARD,boxSizing:"border-box"}}>
+                        {sigSheetOpts.map((sp,i)=><option key={i} value={i}>{fs(sp.l)}×{fs(sp.w)}</option>)}
+                        <option value="Custom">Custom</option>
+                      </select>
+                    );
+                  })()}
+                </div>
+              </div>
+              {s.sheetCustomMode&&<div style={{display:"flex",gap:"4px",marginBottom:"5px",alignItems:"flex-end"}}>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:"8px",color:MT,fontWeight:"600",marginBottom:"2px"}}>Sheet L</div>
                   <NumField unit={unit} mm={s.sheetW} onMM={v=>updSig(s.id,{sheetW:v})}
                     style={{width:"100%",padding:"4px 2px",border:`1.5px solid ${BD}`,borderRadius:"5px",
                     fontSize:"11px",textAlign:"center",fontWeight:"700",outline:"none",boxSizing:"border-box"}}/>
                 </div>
+                <button onClick={()=>updSig(s.id,{sheetW:s.sheetH,sheetH:s.sheetW})} title="Swap Length ↔ Width"
+                  style={{background:BG,border:`1px solid ${BD}`,borderRadius:"5px",padding:"4px 5px",
+                  cursor:"pointer",color:MT,fontWeight:"800",fontSize:"11px",flexShrink:0,marginBottom:"1px"}}>⇄</button>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:"8px",color:MT,fontWeight:"600",marginBottom:"2px"}}>Sheet W</div>
                   <NumField unit={unit} mm={s.sheetH} onMM={v=>updSig(s.id,{sheetH:v})}
                     style={{width:"100%",padding:"4px 2px",border:`1.5px solid ${BD}`,borderRadius:"5px",
                     fontSize:"11px",textAlign:"center",fontWeight:"700",outline:"none",boxSizing:"border-box"}}/>
-                </div>
-                <button onClick={()=>updSig(s.id,{sheetW:s.paperW,sheetH:s.paperH})} title="Reset sheet to paper size"
-                  style={{background:BG,border:`1px solid ${BD}`,borderRadius:"5px",padding:"4px 6px",
-                  cursor:"pointer",color:MT,fontWeight:"800",fontSize:"11px",flexShrink:0,alignSelf:"flex-end"}}>⟲</button>
-              </div>
-              {s.paperCustomMode&&<div style={{display:"flex",gap:"4px",marginBottom:"5px"}}>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:"8px",color:C,fontWeight:"700",marginBottom:"2px"}}>Paper L</div>
-                  <NumField unit={unit} mm={s.paperW} onMM={v=>updSig(s.id,{paperW:v})}
-                    style={{width:"100%",padding:"4px 2px",border:`1.5px solid ${C}`,borderRadius:"5px",
-                    fontSize:"11px",textAlign:"center",color:C,fontWeight:"700",outline:"none",boxSizing:"border-box"}}/>
-                </div>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:"8px",color:C,fontWeight:"700",marginBottom:"2px"}}>Paper W</div>
-                  <NumField unit={unit} mm={s.paperH} onMM={v=>updSig(s.id,{paperH:v})}
-                    style={{width:"100%",padding:"4px 2px",border:`1.5px solid ${C}`,borderRadius:"5px",
-                    fontSize:"11px",textAlign:"center",color:C,fontWeight:"700",outline:"none",boxSizing:"border-box"}}/>
                 </div>
               </div>}
 
@@ -1060,7 +1137,7 @@ export default function App(){
                     style={{width:"100%",padding:"4px 2px",border:`1.5px solid ${BD}`,borderRadius:"5px",
                     fontSize:"10px",outline:"none",background:CARD,boxSizing:"border-box"}}>
                     <option>Single Side</option>
-                    <option>Back&Back - Left-Right</option><option>Front&Back</option>
+                    <option>Back&Back - Left-Right</option><option>Force Back&Back</option><option>Front&Back</option>
                   </select>
                 </div>
               </div>
@@ -1378,10 +1455,13 @@ export default function App(){
 
             {activeTab==="single"?<>
             {/* Paper — auto from plan sheet (compulsory) */}
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
-              paddingBottom:"6px",marginBottom:"6px",borderBottom:"1px solid #F3F4F6"}}>
-              <div style={{fontSize:"11px",color:T,fontWeight:"700"}}>Paper ● — {fmt(nPap)} papers</div>
-              <div style={{fontSize:"12px",fontWeight:"800",color:T}}>Rs.{Math.round(papC).toLocaleString()}</div>
+            <div style={{paddingBottom:"6px",marginBottom:"6px",borderBottom:"1px solid #F3F4F6"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div style={{fontSize:"11px",color:T,fontWeight:"700"}}>Paper ●</div>
+                <div style={{fontSize:"12px",fontWeight:"800",color:T}}>Rs.{Math.round(papC).toLocaleString()}</div>
+              </div>
+              <div style={{fontSize:"9px",color:MT,marginTop:"2px"}}>
+                {pp.n} — {fmt(nPap)} Papers × Rs.{pRate}/- each = Rs.{Math.round(papC).toLocaleString()}</div>
             </div>
 
             {/* Plate — auto from plan sheet (compulsory) — SBS checkbox lives here now */}
@@ -1712,7 +1792,22 @@ export default function App(){
                     </div>
                   ))}
                 </div>
-                <div style={{fontSize:"8px",color:MT,marginTop:"2px"}}>Rs/sheet: {p.packSheets?(p.packPrice/p.packSheets).toFixed(2):"0.00"}</div>
+                <div style={{fontSize:"8px",color:MT,marginTop:"2px",marginBottom:"4px"}}>Rs/sheet: {p.packSheets?(p.packPrice/p.packSheets).toFixed(2):"0.00"}</div>
+                <div style={{fontSize:"8px",color:MT,fontWeight:"700",marginBottom:"3px"}}>Frequent Sheet Sizes</div>
+                {(p.sheetSizes||[]).map((sp,si)=>(
+                  <div key={si} style={{display:"flex",gap:"4px",alignItems:"center",marginBottom:"3px"}}>
+                    <span style={{fontSize:"8px",color:MT,flexShrink:0}}>L</span>
+                    <NumField unit={unit} mm={sp.l} onMM={v=>setSettings(s=>({...s,papers:s.papers.map(x=>x.id===p.id?{...x,sheetSizes:x.sheetSizes.map((y,yi)=>yi===si?{...y,l:v}:y)}:x)}))}
+                      style={{flex:1,padding:"3px",border:`1px solid ${BD}`,borderRadius:"4px",fontSize:"9px",textAlign:"center"}}/>
+                    <span style={{fontSize:"8px",color:MT,flexShrink:0}}>W</span>
+                    <NumField unit={unit} mm={sp.w} onMM={v=>setSettings(s=>({...s,papers:s.papers.map(x=>x.id===p.id?{...x,sheetSizes:x.sheetSizes.map((y,yi)=>yi===si?{...y,w:v}:y)}:x)}))}
+                      style={{flex:1,padding:"3px",border:`1px solid ${BD}`,borderRadius:"4px",fontSize:"9px",textAlign:"center"}}/>
+                    <button onClick={()=>setSettings(s=>({...s,papers:s.papers.map(x=>x.id===p.id?{...x,sheetSizes:x.sheetSizes.filter((_,yi)=>yi!==si)}:x)}))}
+                      style={{background:"none",border:"none",color:ERR,cursor:"pointer",fontSize:"10px",fontWeight:"700"}}>✕</button>
+                  </div>
+                ))}
+                <button onClick={()=>setSettings(s=>({...s,papers:s.papers.map(x=>x.id===p.id?{...x,sheetSizes:[...(x.sheetSizes||[]),{l:x.l/2,w:x.w/2}]}:x)}))}
+                  style={{width:"100%",background:CARD,border:`1px dashed ${BD}`,borderRadius:"6px",padding:"4px",color:MT,fontWeight:"700",cursor:"pointer",fontSize:"9px"}}>+ Add sheet size</button>
               </div>
             ))}
             <button onClick={()=>setSettings(s=>({...s,papers:[...s.papers,{id:Date.now(),name:"New Paper",gsm:100,l:900,w:600,packPrice:5000,packSheets:500}]}))}
@@ -1731,7 +1826,9 @@ export default function App(){
                     style={{background:"none",border:"none",color:ERR,cursor:"pointer",fontSize:"12px",fontWeight:"700"}}>✕</button>
                 </div>
                 <div style={{display:"flex",gap:"4px",flexWrap:"wrap"}}>
-                  {[["Max L",p.maxL,v=>({maxL:v}),true],["Max W",p.maxW,v=>({maxW:v}),true],["Print L",p.printL,v=>({printL:v}),true],
+                  {[["Max L",p.maxL,v=>({maxL:v}),true],["Max W",p.maxW,v=>({maxW:v}),true],
+                    ["Min L",p.minL,v=>({minL:v}),true],["Min W",p.minW,v=>({minW:v}),true],
+                    ["Print L",p.printL,v=>({printL:v}),true],
                     ["Print W",p.printW,v=>({printW:v}),true],["Grip",p.grip,v=>({grip:v}),true],
                     ["Imp/1000",p.impRate,v=>({impRate:v}),false]].map(([lbl,val,patch,isSize])=>(
                     <div key={lbl} style={{flex:"1 0 28%",minWidth:0}}>
