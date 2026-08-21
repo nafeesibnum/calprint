@@ -345,6 +345,7 @@ export default function App(){
   const[msCopies,setMsCopies]=useState(1);
   const[msDup,setMsDup]=useState(0);
   const[msTotalPages,setMsTotalPages]=useState(73);
+  const[msUploadedPdfName,setMsUploadedPdfName]=useState(null);
   const[msPrintRate,setMsPrintRate]=useState(SETTINGS_PRINT_RATE);
   const PLAN_DEFAULTS={planCols:null,planRows:null,gapH:3,gapV:3,cutMarkSz:3,plateGrip:13,safeArea:true,cutMarksOn:true,planPageIdx:0,pageNumbers:{},sigCosts:{},minimized:true};
   const blankSig=(name)=>({id:Date.now()+Math.random(),name,paperW:pW,paperH:pH,sheetW:100,sheetH:100,paperCustomMode:true,
@@ -359,8 +360,29 @@ export default function App(){
       groups:[{colors:4,pages:4}]},
   ]);
   const addSig=()=>setMsSigs(s=>[...s,blankSig(`Paper ${s.length+1}`)]);
+  // Pushes a new total page count into every non-Cover signature's first color group — shared
+  // by both the PDF upload handler and manual edits to the top "No of pages" field, so both
+  // paths stay in sync with the actual calculation groups (not just the top summary number).
+  const syncPagesIntoGroups=(pageCount,jobWMM,jobHMM)=>{
+    setMsSigs(sigs=>sigs.map(s=>{
+      if(/cover/i.test(s.name))return s;
+      const fit=fitCalc(s.sheetW,s.sheetH,s.plateGrip||13,5,0,jobWMM??msProdW,jobHMM??msProdH);
+      const groups=s.groups&&s.groups.length?s.groups.map((g,i)=>i===0?{...g,pages:pageCount}:{...g,pages:0}):[{colors:1,pages:pageCount}];
+      return{...s,groups,pagesPerSheet:Math.max(fit.ups,1)};
+    }));
+  };
   const rmSig=id=>setMsSigs(s=>s.length>1?s.filter(x=>x.id!==id):s);
   const updSig=(id,patch)=>setMsSigs(s=>s.map(x=>x.id===id?{...x,...patch}:x));
+  // Given a new sheet size, auto-picks the smallest plate that can actually handle it (nearest
+  // greater capacity, not just "a" plate), and recomputes pages/sheet from the real Job L×W fit —
+  // both were previously left stale/manual, causing the plan to silently diverge from reality.
+  const autoFitSheet=(sheetL,sheetH)=>{
+    const candidates=settings.plates.filter(p=>p.maxL>=sheetL&&p.maxW>=sheetH);
+    candidates.sort((a,b)=>(a.maxL*a.maxW)-(b.maxL*b.maxW));
+    const plate=candidates[0]||settings.plates[settings.plates.length-1];
+    const fit=fitCalc(sheetL,sheetH,plate?plate.grip:13,5,0,msProdW,msProdH);
+    return{plateName:plate?plate.name:undefined,plateRate:plate?plate.impRate:undefined,pagesPerSheet:Math.max(fit.ups,1)};
+  };
   const updGroup=(sigId,gi,patch)=>setMsSigs(s=>s.map(x=>x.id===sigId?{...x,groups:x.groups.map((g,i)=>i===gi?{...g,...patch}:g)}:x));
   const addGroup=sigId=>setMsSigs(s=>s.map(x=>x.id===sigId?{...x,groups:[...x.groups,{colors:1,pages:0}]}:x));
   const rmGroup=(sigId,gi)=>setMsSigs(s=>s.map(x=>x.id===sigId?{...x,groups:x.groups.filter((_,i)=>i!==gi)}:x));
@@ -611,7 +633,10 @@ export default function App(){
                 <input type="file" accept="application/pdf" style={{display:"none"}} onChange={async e=>{
                     const file=e.target.files[0];if(!file)return;
                     const info=await parsePdfInfo(file);
-                    if(info){setJW(info.pageWMM);setJH(info.pageHMM);}
+                    if(info){
+                      if(info.pageCount>1){showWarn(`⚠ This PDF has ${info.pageCount} pages — looks like a book. Use "Upload book PDF" on the Multiple Sheets tab instead.`);}
+                      setJW(info.pageWMM);setJH(info.pageHMM);
+                    }
                     e.target.value="";
                   }}/>
               </label>
@@ -654,7 +679,10 @@ export default function App(){
             <div style={{display:"flex",gap:"4px",alignItems:"flex-end",marginBottom:"5px"}}>
               <div style={{flex:"1.2",minWidth:0}}>
                 <div style={{fontSize:"8px",color:C,fontWeight:"700",marginBottom:"2px"}}>PAPER</div>
-                <select value={pp.n} onChange={e=>{setPi(paperList.findIndex(p=>p.n===e.target.value));setShOv(null);setCustomMode(false);}}
+                <select value={pp.n} onChange={e=>{
+                    if(e.target.value==="+ Add New Paper"){setScreen("settings");return;}
+                    setPi(paperList.findIndex(p=>p.n===e.target.value));setShOv(null);setCustomMode(false);
+                  }}
                   style={{width:"100%",padding:"5px 4px",border:`1.5px solid ${C}`,borderRadius:"7px",
                   fontSize:"11px",outline:"none",color:C,background:CARD,fontWeight:"700",boxSizing:"border-box"}}>
                   {paperList.map(p=><option key={p.n}>{p.n}</option>)}
@@ -863,10 +891,14 @@ export default function App(){
                   </div>
                   {((bbTB&&both)||sbsOn)&&<div style={{position:"absolute",bottom:0,left:0,right:0,height:`${gPx}px`,
                     background:"rgba(150,150,150,0.18)",borderTop:`1px dashed ${MT}`,zIndex:2,pointerEvents:"none"}}/>}
-                  {safe&&<div style={{position:"absolute",zIndex:1,pointerEvents:"none",
-                    top:`${gPx+sfO}px`,left:`${ePx+sfO}px`,
-                    width:`${dW-2*ePx-2*sfO}px`,height:`${dH-gPx-bGpx-2*sfO}px`,
-                    border:`0.75px dashed ${SUC}`}}/>}
+                  {safe&&(()=>{
+                    const safeW=dW-2*ePx-2*sfO,safeH=dH-gPx-bGpx-2*sfO;
+                    const exceedsSafe=lWp>safeW||lHp>safeH; // ups fit the sheet but spill past the safe margin
+                    return<div style={{position:"absolute",zIndex:1,pointerEvents:"none",
+                      top:`${gPx+sfO}px`,left:`${ePx+sfO}px`,
+                      width:`${safeW}px`,height:`${safeH}px`,
+                      border:`0.75px dashed ${exceedsSafe?ERR:SUC}`}}/>;
+                  })()}
                   <svg style={{position:"absolute",top:0,left:0,width:"100%",height:"100%",
                     pointerEvents:"none",zIndex:2}}>
                     {Array.from({length:Math.ceil(dW/12)+1},(_,i)=>(
@@ -957,16 +989,49 @@ export default function App(){
               <Tog lbl="Multiple copies" on={msMultiCopies} cb={()=>{setMsMultiCopies(!msMultiCopies);if(!msMultiCopies)setMsMultiSheet(false);}} col="#7C3AED"/>
             </div>
 
-            <label style={{display:"flex",alignItems:"center",gap:"5px",marginBottom:"7px",cursor:"pointer",
-              padding:"5px 8px",border:`1.5px dashed ${C}`,borderRadius:"7px",background:CL}}>
-              <span style={{fontSize:"11px",color:C,fontWeight:"700"}}>📖 Upload book PDF (auto-fills pages + Job L/W)</span>
-              <input type="file" accept="application/pdf" style={{display:"none"}} onChange={async e=>{
-                  const file=e.target.files[0];if(!file)return;
-                  const info=await parsePdfInfo(file);
-                  if(info){setMsTotalPages(info.pageCount);setMsProdW(info.pageWMM);setMsProdH(info.pageHMM);}
-                  e.target.value="";
-                }}/>
-            </label>
+            {msUploadedPdfName?(
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                marginBottom:"4px",padding:"5px 8px",border:`1.5px solid ${C}`,borderRadius:"7px",background:CL}}>
+                <span style={{fontSize:"11px",color:C,fontWeight:"700",overflow:"hidden",
+                  textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}}>📖 {msUploadedPdfName}</span>
+                <div style={{display:"flex",alignItems:"center",gap:"6px",flexShrink:0}}>
+                  <label style={{cursor:"pointer",color:C,fontSize:"11px"}}>
+                    ✎
+                    <input type="file" accept="application/pdf" style={{display:"none"}} onChange={async e=>{
+                        const file=e.target.files[0];if(!file)return;
+                        const info=await parsePdfInfo(file);
+                        if(info){
+                          if(info.pageCount===1){showWarn(`⚠ This PDF has only 1 page — looks like a single job, not a book. Use "Upload artwork PDF" on the Single Sheet tab instead.`);}
+                          setMsUploadedPdfName(file.name);
+                          setMsTotalPages(info.pageCount);setMsProdW(info.pageWMM);setMsProdH(info.pageHMM);
+                          syncPagesIntoGroups(info.pageCount,info.pageWMM,info.pageHMM);
+                        }
+                        e.target.value="";
+                      }}/>
+                  </label>
+                  <button onClick={()=>setMsUploadedPdfName(null)}
+                    style={{background:"none",border:"none",color:ERR,fontSize:"12px",fontWeight:"700",cursor:"pointer",padding:0}}>✕</button>
+                </div>
+              </div>
+            ):(
+              <label style={{display:"flex",alignItems:"center",gap:"5px",marginBottom:"4px",cursor:"pointer",
+                padding:"5px 8px",border:`1.5px dashed ${C}`,borderRadius:"7px",background:CL}}>
+                <span style={{fontSize:"11px",color:C,fontWeight:"700"}}>📖 Upload book PDF (auto-fills pages + Job L/W)</span>
+                <input type="file" accept="application/pdf" style={{display:"none"}} onChange={async e=>{
+                    const file=e.target.files[0];if(!file)return;
+                    const info=await parsePdfInfo(file);
+                    if(info){
+                      if(info.pageCount===1){showWarn(`⚠ This PDF has only 1 page — looks like a single job, not a book. Use "Upload artwork PDF" on the Single Sheet tab instead.`);}
+                      setMsUploadedPdfName(file.name);
+                      setMsTotalPages(info.pageCount);setMsProdW(info.pageWMM);setMsProdH(info.pageHMM);
+                      syncPagesIntoGroups(info.pageCount,info.pageWMM,info.pageHMM);
+                    }
+                    e.target.value="";
+                  }}/>
+              </label>
+            )}
+            {warn&&<div style={{background:"#FEF3C7",borderRadius:"6px",padding:"4px 8px",marginBottom:"5px",
+              fontSize:"8px",color:"#92400E",fontWeight:"700"}}>{warn}</div>}
 
             <div style={{display:"flex",gap:"4px",marginBottom:"5px"}}>
               <div style={{flex:1,minWidth:0}}>
@@ -1002,7 +1067,7 @@ export default function App(){
               </div>
               {!msMultiCopies&&<div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:"8px",color:MT,fontWeight:"600",marginBottom:"2px"}}>No of pages</div>
-                <FreeNum val={msTotalPages} onVal={setMsTotalPages}
+                <FreeNum val={msTotalPages} onVal={v=>{setMsTotalPages(v);syncPagesIntoGroups(v);}}
                   style={{width:"100%",padding:"5px 3px",border:`1.5px solid ${BD}`,borderRadius:"6px",
                   fontSize:"12px",textAlign:"center",fontWeight:"700",outline:"none",boxSizing:"border-box"}}/>
               </div>}
@@ -1062,7 +1127,7 @@ export default function App(){
                     onChange={e=>{
                       if(e.target.value==="+ Add New Paper"){setScreen("settings");return;}
                       const p=paperList.find(x=>x.shortName===e.target.value);
-                      if(p)updSig(s.id,{sheetCustomMode:false,paperName:p.shortName,paperW:p.w,paperH:p.h,sheetW:p.w,sheetH:p.h});
+                      if(p)updSig(s.id,{sheetCustomMode:false,paperName:p.shortName,paperW:p.w,paperH:p.h,sheetW:p.w,sheetH:p.h,...autoFitSheet(p.w,p.h)});
                     }}
                     style={{width:"100%",padding:"4px 3px",border:`1.5px solid ${C}`,borderRadius:"5px",
                     fontSize:"10px",outline:"none",background:CARD,color:C,fontWeight:"700",boxSizing:"border-box"}}>
@@ -1080,7 +1145,7 @@ export default function App(){
                       <select value={sigSel} onChange={e=>{
                           if(e.target.value==="Custom"){updSig(s.id,{sheetCustomMode:true});return;}
                           const preset=sigSheetOpts[Number(e.target.value)];
-                          if(preset)updSig(s.id,{sheetCustomMode:false,sheetW:preset.l,sheetH:preset.w});
+                          if(preset)updSig(s.id,{sheetCustomMode:false,sheetW:preset.l,sheetH:preset.w,...autoFitSheet(preset.l,preset.w)});
                         }}
                         style={{width:"100%",padding:"4px 3px",border:`1.5px solid ${BD}`,borderRadius:"5px",
                         fontSize:"9px",outline:"none",background:CARD,boxSizing:"border-box"}}>
@@ -1094,16 +1159,16 @@ export default function App(){
               {s.sheetCustomMode&&<div style={{display:"flex",gap:"4px",marginBottom:"5px",alignItems:"flex-end"}}>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:"8px",color:MT,fontWeight:"600",marginBottom:"2px"}}>Sheet L</div>
-                  <NumField unit={unit} mm={s.sheetW} onMM={v=>updSig(s.id,{sheetW:v})}
+                  <NumField unit={unit} mm={s.sheetW} onMM={v=>updSig(s.id,{sheetW:v,...autoFitSheet(v,s.sheetH)})}
                     style={{width:"100%",padding:"4px 2px",border:`1.5px solid ${BD}`,borderRadius:"5px",
                     fontSize:"11px",textAlign:"center",fontWeight:"700",outline:"none",boxSizing:"border-box"}}/>
                 </div>
-                <button onClick={()=>updSig(s.id,{sheetW:s.sheetH,sheetH:s.sheetW})} title="Swap Length ↔ Width"
+                <button onClick={()=>updSig(s.id,{sheetW:s.sheetH,sheetH:s.sheetW,...autoFitSheet(s.sheetH,s.sheetW)})} title="Swap Length ↔ Width"
                   style={{background:BG,border:`1px solid ${BD}`,borderRadius:"5px",padding:"4px 5px",
                   cursor:"pointer",color:MT,fontWeight:"800",fontSize:"11px",flexShrink:0,marginBottom:"1px"}}>⇄</button>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:"8px",color:MT,fontWeight:"600",marginBottom:"2px"}}>Sheet W</div>
-                  <NumField unit={unit} mm={s.sheetH} onMM={v=>updSig(s.id,{sheetH:v})}
+                  <NumField unit={unit} mm={s.sheetH} onMM={v=>updSig(s.id,{sheetH:v,...autoFitSheet(s.sheetW,v)})}
                     style={{width:"100%",padding:"4px 2px",border:`1.5px solid ${BD}`,borderRadius:"5px",
                     fontSize:"11px",textAlign:"center",fontWeight:"700",outline:"none",boxSizing:"border-box"}}/>
                 </div>
@@ -1112,7 +1177,7 @@ export default function App(){
               <div style={{display:"flex",gap:"4px",marginBottom:"5px",alignItems:"flex-end"}}>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:"8px",color:MT,fontWeight:"600",marginBottom:"2px"}}>Pages/sheet</div>
-                  <FreeNum val={s.pagesPerSheet} onVal={v=>updSig(s.id,{pagesPerSheet:Math.max(v,1)})}
+                  <FreeNum key={`pps-${s.id}-${s.pagesPerSheet}`} val={s.pagesPerSheet} onVal={v=>updSig(s.id,{pagesPerSheet:Math.max(v,1)})}
                     style={{width:"100%",padding:"4px 2px",border:`1.5px solid ${BD}`,borderRadius:"5px",
                     fontSize:"11px",textAlign:"center",fontWeight:"700",outline:"none",boxSizing:"border-box"}}/>
                 </div>
@@ -1189,7 +1254,8 @@ export default function App(){
                   </div>
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontSize:"8px",color:MT,fontWeight:"600",marginBottom:"2px"}}>Plates</div>
-                    <div style={{padding:"4px 2px",fontSize:"11px",textAlign:"center",fontWeight:"700",color:tCol}}>{g.plates}</div>
+                    <div style={{padding:"4px 2px",fontSize:"12px",textAlign:"center",fontWeight:"800",
+                      color:tCol,background:tCol+"18",border:`1px solid ${tCol}55`,borderRadius:"5px"}}>{g.plates}</div>
                   </div>
                   {s.groups.length>1&&<button onClick={()=>rmGroup(s.id,gi)}
                     style={{background:"none",border:"none",color:ERR,cursor:"pointer",fontSize:"12px",
@@ -1228,6 +1294,18 @@ export default function App(){
                 </div>
                 <div style={{fontSize:"8px",color:"#B91C1C",marginTop:"2px"}}>
                   {s.totalPlates}plates × Rs.{s.plateRate}/plate (rate from Settings)</div>
+              </div>
+
+              {/* Plate — styled the same as the Paper / Impression summary boxes above */}
+              <div style={{background:tCol+"12",borderRadius:"7px",padding:"6px 8px",marginTop:"5px"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <span style={{fontSize:"10px",color:tCol,fontWeight:"700"}}>No of Plates</span>
+                  <span style={{fontSize:"12px",fontWeight:"800",color:tCol}}>{fmt(s.totalPlates)}</span>
+                </div>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <span style={{fontSize:"10px",color:tCol,fontWeight:"700"}}>Plate cost.</span>
+                  <span style={{fontSize:"12px",fontWeight:"800",color:tCol}}>Rs.{fmt(Math.round(s.plateCost))}</span>
+                </div>
               </div>
 
               {/* Fields scoped to THIS Paper card only (e.g. Laminate just for Cover Page) */}
@@ -1289,10 +1367,12 @@ export default function App(){
                 const leaves=Math.floor(pps/2);
                 const usesFolding=bindKey==="Saddle Stitch"||bindKey==="Perfect";
                 const seq=[];
-                // Verified exact leaf order for 8 pages/sheet (16-page signature), confirmed against
-                // your real imposition sheet — front and back templates, offset by chunkStart.
+                // Verified exact leaf order — only valid for a genuine 4×2 (or 2×4) grid. Checking the
+                // REAL computed shape here (not just "pps===8") is critical: if Job L/W × Sheet size
+                // produces a different grid, forcing this template on it silently scrambles positions.
                 const TEMPLATE_8UP={front:[7,8,12,3,11,4,0,15],back:[1,14,13,2,6,9,10,5]}; // 0-indexed offsets
-                if(usesFolding&&pps===8){
+                const gridMatches8Up=cellCount===8&&((cols===4&&rows===2)||(cols===2&&rows===4));
+                if(usesFolding&&gridMatches8Up){
                   const t=isFrontPage?TEMPLATE_8UP.front:TEMPLATE_8UP.back;
                   t.forEach(off=>seq.push(chunkStart+off));
                 }else if(usesFolding){
@@ -1321,8 +1401,10 @@ export default function App(){
                 <div style={{marginTop:"4px"}}>
                   {/* Cols/Rows adjust */}
                   <div style={{display:"flex",justifyContent:"center",gap:"8px",marginBottom:"6px"}}>
-                    {[["Columns",cols,c=>updSig(s.id,{planCols:Math.max(1,c-1)}),c=>updSig(s.id,{planCols:c+1}),C],
-                      ["Rows",rows,r=>updSig(s.id,{planRows:Math.max(1,r-1)}),r=>updSig(s.id,{planRows:r+1}),M]
+                    {[["Columns",cols,c=>updSig(s.id,{planCols:Math.max(1,c-1),pagesPerSheet:Math.max(1,c-1)*rows}),
+                        c=>updSig(s.id,{planCols:c+1,pagesPerSheet:(c+1)*rows}),C],
+                      ["Rows",rows,r=>updSig(s.id,{planRows:Math.max(1,r-1),pagesPerSheet:cols*Math.max(1,r-1)}),
+                        r=>updSig(s.id,{planRows:r+1,pagesPerSheet:cols*(r+1)}),M]
                     ].map(([lbl,val,dec,inc,col])=>(
                       <div key={lbl} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:"2px"}}>
                         <span style={{fontSize:"7px",color:col,fontWeight:"700"}}>{lbl}</span>
@@ -1402,11 +1484,15 @@ export default function App(){
                     })}
                   </div>
                   <div style={{fontSize:"8px",color:MT,marginTop:"4px",marginBottom:"6px",textAlign:"center"}}>
+                    Grid from your Job L×W on this sheet: <b>{cols}×{rows} = {cellCount} ups</b>
+                    {pps!==cellCount&&<span style={{color:ERR}}> (⚠ Pages/sheet field says {pps} — doesn't match! Update it to {cellCount} for correct costs.)</span>}
+                  </div>
+                  <div style={{fontSize:"8px",color:MT,marginBottom:"6px",textAlign:"center"}}>
                     {usesFolding
-                      ?(pps===8
-                        ?<>✓ Exact verified imposition order for 8 pages/sheet ({bindKey}).</>
+                      ?(gridMatches8Up
+                        ?<>✓ Exact verified imposition order (4×2 grid, {bindKey}).</>
                         :<>Pairs auto-fill so Front+Back sum to {sigSize+1} ({bindKey}) — leaf order not yet
-                          verified for {pps} pages/sheet, edit cells if needed.</>)
+                          verified for a {cols}×{rows} grid, edit cells if needed.</>)
                       :<>{bindKey} doesn't fold — pages are simply cut apart, so numbers auto-fill sequentially.</>}
                   </div>
                   {/* CorelDraw-style page navigator */}
