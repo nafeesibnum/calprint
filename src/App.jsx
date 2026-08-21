@@ -1360,6 +1360,12 @@ export default function App(){
                 const jobW=jobFit.rot?msProdH:msProdW;
                 const jobH=jobFit.rot?msProdW:msProdH;
                 const cellCount=cols*rows;
+                // Self-correcting: pagesPerSheet must always equal the REAL computed grid (cols×rows).
+                // The +/- button fix only covered manual grid clicks — this covers every other path
+                // that changes the grid too (Job L/W edits, Sheet size changes, Paper changes...).
+                if(pps!==cellCount&&cellCount>0){
+                  updSig(s.id,{pagesPerSheet:cellCount});
+                }
                 const sheetIdx=Math.floor(pIdx/2);
                 const isFrontPage=pIdx%2===0;
                 const sigSize=pps*2;
